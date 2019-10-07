@@ -1,0 +1,1141 @@
+﻿//
+// Project: cliblisp
+// Created by bajdcc
+//
+
+#include <regex>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
+#include "cgui.h"
+#include "cexception.h"
+#include "crev.h"
+#include "../rapidjson/document.h"
+#include "../rapidjson/writer.h"
+#include "../rapidjson/stringbuffer.h"
+#include "../rapidjson/error/en.h"
+
+#define ATLTRACE printf
+
+#ifdef REPORT_ERROR
+#undef REPORT_ERROR
+#endif
+#define REPORT_ERROR 0
+#ifdef REPORT_ERROR_FILE
+#undef REPORT_ERROR_FILE
+#endif
+#define REPORT_ERROR_FILE "runtime.log"
+
+#define AST_FILE "ast.log"
+
+#define LOG_AST 0
+#define LOG_DEP 0
+
+#define ENTRY_FILE "/sys/entry"
+#define MAIN_FILE "/usr/main"
+
+using BYTE = uint8_t;
+using WORD = uint16_t;
+using DWORD = uint32_t;
+
+#define MAKE_ARGB(a, r, g, b) ((uint32_t)(((BYTE)(r)|((WORD)((BYTE)(g))<<8))|(((DWORD)(BYTE)(b))<<16)|(((DWORD)(BYTE)(a))<<24)))
+#define MAKE_RGB(r, g, b) MAKE_ARGB(255,r,g,b)
+#define GET_R(rgb) (LOBYTE(rgb))
+#define GET_G(rgb) (LOBYTE(((WORD)(rgb)) >> 8))
+#define GET_B(rgb) (LOBYTE((WORD)((rgb)>>16)))
+#define GET_A(rgb) (LOBYTE((rgb)>>24))
+
+extern int g_argc;
+extern char **g_argv;
+
+namespace clib {
+
+    cgui::cgui() {
+        buffer = memory.alloc_array<char>((uint) size);
+        assert(buffer);
+        memset(buffer, 0, (uint) size);
+        colors_bg = memory.alloc_array<uint32_t>((uint) size);
+        assert(colors_bg);
+        color_bg = 0;
+        std::fill(colors_bg, colors_bg + size, color_bg);
+        colors_fg = memory.alloc_array<uint32_t>((uint) size);
+        assert(colors_fg);
+        color_fg = MAKE_RGB(255, 255, 255);
+        std::fill(colors_fg, colors_fg + size, color_fg);
+        color_bg_stack.push_back(color_bg);
+        color_fg_stack.push_back(color_fg);
+    }
+
+    string_t cgui::load_file(const string_t &name) {
+        std::smatch res;
+        string_t path;
+        if (std::regex_match(name, res, re_path)) {
+            path = FILE_ROOT + res[0].str() + ".cpp";
+        }
+        if (path.empty())
+            error("file not exists: " + name);
+        std::ifstream t(path);
+        if (t) {
+            std::stringstream buffer;
+            buffer << t.rdbuf();
+            auto str = buffer.str();
+            std::vector<byte> data(str.begin(), str.end());
+            vm->as_root(true);
+            vm->write_vfs(name, data);
+            vm->as_root(false);
+            return str;
+        }
+        std::vector<byte> data;
+        if (vm->read_vfs(name, data)) {
+            return string_t(data.begin(), data.end());
+        }
+        error("file not exists: " + name);
+        return "";
+    }
+
+    bool cgui::exist_file(const string_t &name) {
+        std::smatch res;
+        string_t path;
+        if (std::regex_match(name, res, re_path)) {
+            path = FILE_ROOT + res[0].str() + ".cpp";
+        }
+        if (path.empty())
+            return false;
+        std::ifstream t(path);
+        if (t) {
+            return true;
+        }
+        if (vm->exist_vfs(name)) {
+            return true;
+        }
+        return false;
+    }
+
+    bool cgui::exist_bin(const string_t &name) {
+        std::smatch res;
+        string_t path;
+        if (std::regex_match(name, res, re_path)) {
+            path = BIN_ROOT + res[0].str() + ".bin";
+        }
+        if (path.empty())
+            return false;
+        std::ifstream t(path);
+        if (!t) {
+            return false;
+        }
+        if (cache.find(name) != cache.end())
+            return true;
+        std::ifstream ifs(path, std::ios::binary);
+        if (ifs) {
+            auto p = ifs.rdbuf();
+            auto size = p->pubseekoff(0, std::ios::end, std::ios::in);
+            p->pubseekpos(0, std::ios::in);
+            std::vector<byte> data;
+            data.resize((size_t) size);
+            p->sgetn((char *) data.data(), size);
+            if (data.size() < 12) {
+                return false;
+            }
+            if (strncmp((const char *) data.data(), "CCOS", 4) == 0) {
+                if (strncmp((const char *) data.data() + 4, "TEXT", 4) == 0) {
+                    auto size2 = *((size_t *) (data.data() + 8));
+                    if (size2 != data.size() - 12)
+                        return false;
+                    data.erase(data.begin(), data.begin() + 12);
+                    cache.insert(std::make_pair(name, data));
+                    vm->as_root(true);
+                    vm->write_vfs(name + ".bin", crev::conv(data));
+                    vm->as_root(false);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool cgui::save_bin(const string_t &name) {
+        std::smatch res;
+        string_t path;
+        if (std::regex_match(name, res, re_path)) {
+            path = BIN_ROOT + res[0].str() + ".bin";
+        }
+        if (path.empty())
+            return false;
+        std::ofstream ofs(path, std::ios::binary);
+        if (ofs) {
+            const auto &data = cache.at(name);
+            vm->as_root(true);
+            vm->write_vfs(name + ".bin", crev::conv(data));
+            vm->as_root(false);
+            ofs.write("CCOSTEXT", 8);
+            size = data.size();
+            ofs.write((const char *) &size, 4);
+            ofs.write((const char *) data.data(), data.size());
+            return true;
+        }
+        return false;
+    }
+
+    long cgui::get_fs_time(const string_t &name, const string_t &ext) const {
+        std::smatch res;
+        string_t path;
+        if (std::regex_match(name, res, re_path)) {
+            path = BIN_ROOT + res[0].str() + ext;
+        }
+        if (path.empty())
+            return false;
+
+        struct stat buf;
+        FILE *pFile;
+        pFile = fopen(path.c_str(), "r");
+        int fd = fileno(pFile);
+        fstat(fd, &buf);
+        long time = buf.st_mtime;
+        fclose(pFile);
+        return time;
+    }
+
+    void cgui::reset() {
+        if (vm) {
+            vm.reset();
+            gen.reset();
+            cvm::global_state.input_lock = -1;
+            cvm::global_state.input_content.clear();
+            cvm::global_state.input_waiting_list.clear();
+            cvm::global_state.input_read_ptr = -1;
+            cvm::global_state.input_success = false;
+            cvm::global_state.input_code = 0;
+            input_state = false;
+            reset_cmd();
+            reset_cycles();
+            reset_ips();
+        }
+        running = false;
+        exited = false;
+    }
+
+    void cgui::draw(bool paused, decimal fps) {
+        if (!paused) {
+            if (cvm::global_state.interrupt) {
+                cycle = GUI_CYCLES;
+            } else if (cycle_set) {
+                // ...
+            } else if (cycle_stable > 0) {
+                if (fps > GUI_MAX_FPS_RATE) {
+                    cycle = std::min(cycle << 1, GUI_MAX_CYCLE);
+                } else if (fps < GUI_MIN_FPS_RATE) {
+                    cycle_stable--;
+                }
+            } else if (fps > GUI_MAX_FPS_RATE) {
+                if (cycle_speed >= 0) {
+                    cycle_speed = std::min(cycle_speed + 1, GUI_MAX_SPEED);
+                    cycle = std::min(cycle << cycle_speed, GUI_MAX_CYCLE);
+                } else {
+                    cycle_speed = 0;
+                }
+            } else if (fps < GUI_MIN_FPS_RATE) {
+                if (cycle_speed <= 0) {
+                    cycle_speed = std::max(cycle_speed - 1, -GUI_MAX_SPEED);
+                    cycle = std::max(cycle >> (-cycle_speed), GUI_MIN_CYCLE);
+                } else {
+                    cycle_speed = 0;
+                }
+            } else {
+                if (cycle_stable == 0) {
+                    cycle_speed = 0;
+                    cycle_stable = GUI_CYCLE_STABLE;
+                }
+            }
+            reset_ips();
+            for (int i = 0; i < ticks + cycle_speed; ++i) {
+                tick();
+            }
+        }
+    }
+
+    void cgui::reset_ips() {
+        if (vm)
+            vm->reset_ips();
+    }
+
+    void cgui::tick() {
+        if (exited)
+            return;
+        if (running) {
+            try {
+                if (!vm->run(cycle, cycles)) {
+                    running = false;
+                    exited = true;
+                    vm.reset();
+                    gen.reset();
+                }
+            }
+            catch (const cexception &e) {
+                ATLTRACE("[SYSTEM] ERR  | RUNTIME ERROR: %s\n", e.message().c_str());
+#if REPORT_ERROR
+                {
+                    std::ofstream log(REPORT_ERROR_FILE, std::ios::app | std::ios::out);
+                    log << "[SYSTEM] ERR  | RUNTIME ERROR: " << e.message() << std::endl;
+                }
+#endif
+                exited = true;
+                running = false;
+                //vm.reset();
+                //gen.reset();
+                //running = false;
+            }
+        } else {
+            if (!vm) {
+                vm = std::make_unique<cvm>();
+                vm->set_gui(this);
+                {
+                    std::vector<byte> d(main_code.begin(), main_code.end());
+                    vm->write_vfs(MAIN_FILE, d);
+                }
+                std::vector<string_t> args;
+                if (g_argc > 0) {
+                    args.emplace_back(ENTRY_FILE);
+                    for (int i = 1; i < g_argc; ++i) {
+                        args.emplace_back(g_argv[i]);
+                    }
+                }
+                if (compile(ENTRY_FILE, args, decltype(args)()) != -1) {
+                    running = true;
+                }
+            }
+        }
+    }
+
+    void cgui::put_string(const string_t &str) {
+        for (auto &s : str) {
+            put_char(s);
+        }
+    }
+
+    void cgui::put_char(int c) {
+        if (cmd_state) {
+            if (c == '\033') {
+                static string_t pat{R"([A-Za-z][0-9a-f]{1,8})"};
+                static std::regex re(pat);
+                std::smatch res;
+                string_t s(cmd_string.begin(), cmd_string.end());
+                if (std::regex_search(s, res, re)) {
+                    try {
+                        exec_cmd(s);
+                    }
+                    catch (const std::invalid_argument &) {
+                        // '/dev/random' : cause error
+                    }
+                }
+                cmd_string.clear();
+                cmd_state = false;
+            } else {
+                cmd_string.push_back(c);
+            }
+            return;
+        } else if (c == '\033') {
+            cmd_state = true;
+            return;
+        }
+        if (c == 0)
+            return;
+        if (c == '\n') {
+            ptr_x = 0;
+            if (ptr_y == rows - 1) {
+                new_line();
+            } else {
+                ptr_y++;
+            }
+        } else if (c == '\b') {
+            auto ascii = true;
+            if (ptr_x != 0 || ptr_y != 0) {
+                auto cc = buffer[ptr_y * cols + ptr_x - 1];
+                if (cc < 0) {
+                    WORD wd = (((BYTE) cc) << 8) | ((BYTE) buffer[ptr_y * cols + ptr_x]);
+                    if (wd >= 0x8140 && wd <= 0xFEFE) { // GBK
+                        ascii = false;
+                    }
+                }
+            }
+            if (ptr_mx == -1 && ptr_my == -1 && ptr_x > 0) {
+                forward(ptr_x, ptr_y, false);
+                draw_char('\u0000');
+                if (!ascii) {
+                    forward(ptr_x, ptr_y, false);
+                    draw_char('\u0000');
+                }
+            } else {
+                if (ptr_mx + ptr_my * cols < ptr_x + ptr_y * cols) {
+                    forward(ptr_x, ptr_y, false);
+                    draw_char('\u0000');
+                    if (!ascii) {
+                        forward(ptr_x, ptr_y, false);
+                        draw_char('\u0000');
+                    }
+                    if (!(ptr_x == ptr_rx && ptr_y == ptr_ry)) {
+                        for (auto i = ptr_y * cols + ptr_x; i < ptr_ry * cols + ptr_rx; ++i) {
+                            buffer[i] = buffer[i + 1];
+                            colors_bg[i] = colors_bg[i + 1];
+                            colors_fg[i] = colors_fg[i + 1];
+                        }
+                        buffer[ptr_ry * cols + ptr_rx] = '\0';
+                        colors_bg[ptr_ry * cols + ptr_rx] = color_bg;
+                        colors_fg[ptr_ry * cols + ptr_rx] = color_fg;
+                    }
+                    forward(ptr_rx, ptr_ry, false);
+                    if (!ascii) {
+                        forward(ptr_rx, ptr_ry, false);
+                    }
+                }
+            }
+        } else if (c == 0xff) {
+            if (ptr_rx + ptr_ry * cols > ptr_x + ptr_y * cols) {
+                move(false);
+                put_char('\b');
+            }
+        } else if (c == '\u0002') {
+            ptr_x--;
+            while (ptr_x >= 0) {
+                draw_char('\u0000');
+                ptr_x--;
+            }
+            ptr_x = 0;
+        } else if (c == '\r') {
+            ptr_x = 0;
+        } else if (c == '\f') {
+            ptr_x = 0;
+            ptr_y = 0;
+            ptr_mx = 0;
+            ptr_my = 0;
+            ptr_rx = 0;
+            ptr_ry = 0;
+            memset(buffer, 0, (uint) size);
+            std::fill(colors_bg, colors_bg + size, color_bg);
+            std::fill(colors_fg, colors_fg + size, color_fg);
+        } else {
+            auto rx = ptr_rx == -1 ? ptr_x : ptr_rx;
+            auto ry = ptr_ry == -1 ? ptr_y : ptr_ry;
+            auto end = rx == cols - 1 && ry == rows - 1;
+            auto nl = rx == ptr_x && rx == cols - 1;
+            if (end) {
+                if (nl) {
+                    draw_char(c);
+                    new_line();
+                    ptr_x = 0;
+                } else {
+                    new_line();
+                    ptr_y--;
+                    draw_char(c);
+                    ptr_x++;
+                }
+            } else {
+                draw_char(c);
+                forward(ptr_x, ptr_y, true);
+            }
+        }
+    }
+
+    void cgui::input_char(char c) {
+        input(c);
+    }
+
+    void cgui::new_line() {
+        if (ptr_my != -1) {
+            if (ptr_my == 0) {
+                ptr_mx = ptr_my = 0;
+            } else {
+                ptr_my--;
+            }
+        }
+        memcpy(buffer, buffer + cols, (uint) cols * (rows - 1));
+        memset(&buffer[cols * (rows - 1)], 0, (uint) cols);
+        memcpy(colors_bg, colors_bg + cols, (uint) cols * (rows - 1) * sizeof(uint32_t));
+        std::fill(&colors_bg[cols * (rows - 1)], &colors_bg[cols * (rows)], color_bg);
+        memcpy(colors_fg, colors_fg + cols, (uint) cols * (rows - 1) * sizeof(uint32_t));
+        std::fill(&colors_fg[cols * (rows - 1)], &colors_fg[cols * (rows)], color_fg);
+    }
+
+    void cgui::draw_char(const char &c) {
+        if (input_state && c) {
+            forward(ptr_rx, ptr_ry, true);
+            if (!(ptr_x == ptr_rx && ptr_y == ptr_ry)) {
+                for (auto i = ptr_ry * cols + ptr_rx; i > ptr_y * cols + ptr_x; --i) {
+                    buffer[i] = buffer[i - 1];
+                    colors_bg[i] = colors_bg[i - 1];
+                    colors_fg[i] = colors_fg[i - 1];
+                }
+            }
+        }
+        buffer[ptr_y * cols + ptr_x] = c;
+        colors_bg[ptr_y * cols + ptr_x] = color_bg;
+        colors_fg[ptr_y * cols + ptr_x] = color_fg;
+    }
+
+    void cgui::error(const string_t &str) {
+        throw cexception(ex_gui, str);
+    }
+
+    void cgui::set_cycle(int cycle) {
+        if (cycle == 0) {
+            cycle_set = false;
+            this->cycle = GUI_CYCLES;
+        } else {
+            cycle_set = true;
+            this->cycle = cycle;
+        }
+    }
+
+    void cgui::set_ticks(int ticks) {
+        this->ticks = ticks;
+    }
+
+    void cgui::move(bool left) {
+        if (left) {
+            if (ptr_mx + ptr_my * cols < ptr_x + ptr_y * cols) {
+                forward(ptr_x, ptr_y, false);
+            }
+        } else {
+            if (ptr_x + ptr_y * cols < ptr_rx + ptr_ry * cols) {
+                forward(ptr_x, ptr_y, true);
+            }
+        }
+    }
+
+    void cgui::forward(int &x, int &y, bool forward) {
+        if (forward) {
+            if (x == cols - 1) {
+                x = 0;
+                if (y != rows - 1) {
+                    y++;
+                }
+            } else {
+                x++;
+            }
+        } else {
+            if (y == 0) {
+                if (x != 0) {
+                    x--;
+                }
+            } else {
+                if (x != 0) {
+                    x--;
+                } else {
+                    x = cols - 1;
+                    y--;
+                }
+            }
+        }
+    }
+
+    string_t cgui::input_buffer() const {
+        auto begin = ptr_mx + ptr_my * cols;
+        auto end = ptr_x + ptr_y * cols;
+        std::stringstream ss;
+        for (int i = begin; i <= end; ++i) {
+            if (buffer[i])
+                ss << buffer[i];
+        }
+        return ss.str();
+    }
+
+    void cgui::resize(int r, int c) {
+        if (r == 0 && c == 0) {
+            r = GUI_ROWS;
+            c = GUI_COLS;
+        }
+        auto old_rows = rows;
+        auto old_cols = cols;
+        rows = std::max(10, std::min(r, 60));
+        cols = std::max(20, std::min(c, 200));
+        ATLTRACE("[SYSTEM] GUI  | Resize: from (%d, %d) to (%d, %d)\n", old_rows, old_cols, rows, cols);
+        size = rows * cols;
+        auto old_buffer = buffer;
+        buffer = memory.alloc_array<char>((uint) size);
+        assert(buffer);
+        if (!buffer)
+            error("gui memory overflow");
+        memset(buffer, 0, (uint) size);
+        auto old_bg = colors_bg;
+        colors_bg = memory.alloc_array<uint32_t>((uint) size);
+        assert(colors_bg);
+        if (!colors_bg)
+            error("gui memory overflow");
+        std::fill(colors_bg, colors_bg + size, 0);
+        auto old_fg = colors_fg;
+        colors_fg = memory.alloc_array<uint32_t>((uint) size);
+        assert(colors_fg);
+        if (!colors_fg)
+            error("gui memory overflow");
+        std::fill(colors_fg, colors_fg + size, MAKE_RGB(255, 255, 255));
+        auto min_rows = std::min(old_rows, rows);
+        auto min_cols = std::min(old_cols, cols);
+        auto delta_rows = old_rows - min_rows;
+        for (int i = 0; i < min_rows; ++i) {
+            for (int j = 0; j < min_cols; ++j) {
+                buffer[i * cols + j] = old_buffer[(delta_rows + i) * old_cols + j];
+                colors_bg[i * cols + j] = old_bg[(delta_rows + i) * old_cols + j];
+                colors_fg[i * cols + j] = old_fg[(delta_rows + i) * old_cols + j];
+            }
+        }
+        ptr_x = std::min(ptr_x, cols);
+        ptr_y = std::min(ptr_y, rows);
+        ptr_mx = std::min(ptr_mx, cols);
+        ptr_my = std::min(ptr_my, rows);
+        ptr_rx = std::min(ptr_rx, cols);
+        ptr_ry = std::min(ptr_ry, rows);
+        memory.free(old_buffer);
+        memory.free(old_fg);
+        memory.free(old_bg);
+    }
+
+    std::unordered_set<string_t> cgui::get_dep(string_t &path) const {
+        auto f = cache_code.find(path);
+        if (f != cache_code.end()) {
+            return cache_dep.at(path);
+        }
+        return std::unordered_set<string_t>();
+    }
+
+    void cgui::set_main(const std::string &data) {
+        main_code = data;
+    }
+
+    bool cgui::is_running() const {
+        return !exited;
+    }
+
+    void cgui::load_dep(string_t &path, std::unordered_set<string_t> &deps) {
+        auto f = cache_code.find(path);
+        if (f != cache_code.end()) {
+            deps.insert(cache_dep[path].begin(), cache_dep[path].end());
+            return;
+        }
+        auto code = load_file(path);
+        static string_t pat_inc{"#include[ ]+\"([/A-Za-z0-9_-]+?)\""};
+        static std::regex re_inc(pat_inc);
+        std::smatch res;
+        auto begin = code.cbegin();
+        auto end = code.cend();
+        std::vector<std::tuple<int, int, string_t>> records;
+        {
+            auto offset = 0;
+            while (std::regex_search(begin, end, res, re_inc)) {
+                if (res[1].str() == path) {
+                    error("cannot include self: " + path);
+                }
+                if (offset + res.position() > 0) {
+                    if (code[offset + res.position() - 1] != '\n') {
+                        error("invalid include: " + res[1].str());
+                    }
+                }
+                records.emplace_back(offset + res.position(),
+                                     offset + res.position() + res.length(),
+                                     res[1].str());
+                offset += std::distance(begin, res[0].second);
+                begin = res[0].second;
+            }
+        }
+        if (!records.empty()) {
+            // has #include directive
+            std::unordered_set<string_t> _deps;
+            for (auto &r : records) {
+                auto &include_path = std::get<2>(r);
+                load_dep(include_path, _deps);
+                _deps.insert(include_path);
+            }
+            std::stringstream sc;
+            int prev = 0;
+            for (auto &r : records) {
+                auto &start = std::get<0>(r);
+                auto &length = std::get<1>(r);
+                if (prev < start) {
+                    auto frag = code.substr((uint) prev, (uint) (start - prev));
+                    sc << frag;
+                }
+                auto incs = code.substr((uint) start, (uint) (length - start));
+                sc << "// => " << incs;
+                prev = length;
+            }
+            if (prev < (int) code.length()) {
+                auto frag = code.substr((uint) prev, code.length() - (uint) prev);
+                sc << frag;
+            }
+            cache_code.insert(std::make_pair(path, sc.str()));
+            cache_dep.insert(std::make_pair(path, _deps));
+        } else {
+            // no #include directive
+            cache_code.insert(std::make_pair(path, code));
+            cache_dep.insert(std::make_pair(path, std::unordered_set<string_t>()));
+        }
+        load_dep(path, deps);
+    }
+
+    string_t cgui::do_include(string_t &path) { // DAG solution for include
+        std::vector<string_t> v; // VERTEX(Map id to name)
+        std::unordered_map<string_t, int> deps; // VERTEX(Map name to id)
+        {
+            std::unordered_set<string_t> _deps;
+            load_dep(path, _deps);
+            if (_deps.empty())
+                return cache_code[path]; // no include
+            _deps.insert(path);
+            v.resize(_deps.size());
+            std::copy(_deps.begin(), _deps.end(), v.begin());
+            int i = 0;
+            for (auto &d : v) {
+                deps.insert(std::make_pair(d, i++));
+            }
+        }
+        auto n = v.size();
+        std::vector<std::vector<bool>> DAG(n); // DAG(Map id to id)
+        std::unordered_set<size_t> deleted;
+        std::vector<size_t> topo; // 拓扑排序
+        for (size_t i = 0; i < n; ++i) {
+            DAG[i].resize(n);
+            for (size_t j = 0; j < n; ++j) {
+                auto &_d = cache_dep[v[i]];
+                if (_d.find(v[j]) != _d.end())
+                    DAG[i][j] = true;
+            }
+        }
+        // DAG[i][j] == true  =>  i 包含 j
+        for (size_t i = 0; i < n; ++i) { // 每次找出零入度点并删除
+            size_t right = n;
+            for (size_t j = 0; j < n; ++j) { // 找出零入度点
+                if (deleted.find(j) == deleted.end()) {
+                    bool success = true;
+                    for (size_t k = 0; k < n; ++k) {
+                        if (DAG[j][k]) {
+                            success = false;
+                            break;
+                        }
+                    }
+                    if (success) { // 找到
+                        right = j;
+                        break;
+                    }
+                }
+            }
+            if (right != n) {
+                for (size_t k = 0; k < n; ++k) { // 删除点
+                    DAG[k][right] = false;
+                }
+                topo.push_back(right);
+                deleted.insert(right);
+            }
+        }
+        if (topo.size() != n) {
+            error("topo failed: " + path);
+        }
+#if LOG_DEP
+        ATLTRACE("[SYSTEM] DEP  | ---------------\n");
+        ATLTRACE("[SYSTEM] DEP  | PATH: %s\n", path.c_str());
+        for (size_t i = 0; i < n; ++i) {
+            ATLTRACE("[SYSTEM] DEP  | [%d] ==> %s\n", i, v[topo[i]].c_str());
+        }
+        ATLTRACE("[SYSTEM] DEP  | ---------------\n");
+#endif
+        std::stringstream ss;
+        for (auto &tp : topo) {
+            ss << "pragma \"note:" << v[tp] << "\";" << std::endl;
+            ss << cache_code[v[tp]] << std::endl;
+        }
+        return ss.str();
+    }
+
+    int cgui::compile(const string_t &path, const std::vector<string_t> &args, const std::vector<string_t> &paths) {
+        if (path.empty())
+            return -1;
+        auto fail_errno = -1;
+        auto new_path = path;
+        auto bin_exist = false;
+        if (path[0] != '/') {
+            for (auto &p : paths) {
+                auto pp = p == "/" ? ('/' + path) : (p + '/' + path);
+                if (exist_bin(pp)) {
+                    new_path = pp;
+                    bin_exist = true;
+                    break;
+                }
+            }
+        } else if (exist_bin(new_path)) {
+            bin_exist = true;
+        }
+        if (bin_exist) {
+            // 判断生成的二进制文件是否最新
+            // 即：生成时间大于代码修改时间
+            // 失败的话，就删除cache缓存
+            if (get_fs_time(new_path, ".cpp") > get_fs_time(new_path, ".bin")) {
+                // FAILED
+                cache.erase(new_path);
+            }
+        } else if (path[0] != '/') {
+            for (auto &p : paths) {
+                auto pp = p + '/' + path;
+                if (exist_file(pp)) {
+                    new_path = pp;
+                    break;
+                }
+            }
+        }
+        try {
+            auto c = cache.find(new_path);
+            if (c != cache.end()) {
+                return vm->load(new_path, c->second, args);
+            }
+            auto code = do_include(new_path);
+            fail_errno = -2;
+            gen.reset();
+            auto root = p.parse(code, &gen);
+#if LOG_AST
+            {
+                std::ofstream log(AST_FILE, std::ios::app | std::ios::out);
+                log << std::endl << std::endl;
+                cast::print(root, 0, log);
+                log << std::endl << std::endl;
+            }
+#endif
+            gen.gen(new_path, root);
+            auto file = gen.file();
+            p.clear_ast();
+            cache.insert(std::make_pair(new_path, file));
+            save_bin(new_path);
+            return vm->load(new_path, file, args);
+        }
+        catch (const cexception &e) {
+            gen.reset();
+            ATLTRACE("[SYSTEM] ERR  | PATH: %s, %s\n", new_path.c_str(), e.message().c_str());
+#if REPORT_ERROR
+            {
+                std::ofstream log(REPORT_ERROR_FILE, std::ios::app | std::ios::out);
+                log << "[SYSTEM] ERR  | PATH: " << new_path << ", " << e.message() << std::endl;
+            }
+#endif
+            return fail_errno;
+        }
+    }
+
+    void cgui::input_set(bool valid) {
+        if (valid) {
+            input_state = true;
+            ptr_mx = ptr_x;
+            ptr_my = ptr_y;
+            ptr_rx = ptr_x;
+            ptr_ry = ptr_y;
+        } else {
+            input_state = false;
+            ptr_mx = -1;
+            ptr_my = -1;
+            ptr_rx = -1;
+            ptr_ry = -1;
+        }
+        input_ticks = 0;
+        input_caret = false;
+    }
+
+    void cgui::input(int c) {
+        if (c == 3) {
+            cvm::global_state.interrupt = true;
+            cmd_state = false;
+            if (input_state) {
+                ptr_x = ptr_rx;
+                ptr_y = ptr_ry;
+                put_char('\n');
+                cvm::global_state.input_content.clear();
+                cvm::global_state.input_read_ptr = 0;
+                cvm::global_state.input_success = true;
+                cvm::global_state.input_code = 0;
+                input_state = false;
+                cvm::global_state.input_single = false;
+            }
+            return;
+        }
+        if (!input_state)
+            return;
+        if (cvm::global_state.input_single) {
+            if (c > 0 && c < 256 && (std::isprint(c) || c == '\r')) {
+                if (c == '\r')
+                    c = '\n';
+                put_char(c);
+                ptr_x = ptr_rx;
+                ptr_y = ptr_ry;
+                string_t s;
+                s += c;
+                cvm::global_state.input_content = s;
+                cvm::global_state.input_read_ptr = 0;
+                cvm::global_state.input_success = true;
+                cvm::global_state.input_code = 0;
+                cvm::global_state.input_single = false;
+                input_state = false;
+            }
+            return;
+        }
+        if (c < 0) {
+            put_char(c);
+            return;
+        }
+        if (c < 0xffff && c > 0xff) {
+            return;
+        }
+        if (!((c & GUI_SPECIAL_MASK) || std::isprint(c) || c == '\b' || c == '\n' || c == '\r' || c == 4 || c == 7 ||
+              c == 26 || c == 22)) {
+            return;
+        }
+        if (c == '\b') {
+            put_char('\b');
+            return;
+        }
+        if (c == '\r' || c == 4 || c == 26) {
+            ptr_x = ptr_rx;
+            ptr_y = ptr_ry;
+            put_char('\n');
+            cvm::global_state.input_content = input_buffer();
+            cvm::global_state.input_read_ptr = 0;
+            cvm::global_state.input_success = true;
+            cvm::global_state.input_code = 0;
+            input_state = false;
+            return;
+        }
+        if (c & GUI_SPECIAL_MASK) {
+            cvm::global_state.input_content = input_buffer();
+            cvm::global_state.input_read_ptr = 0;
+            cvm::global_state.input_success = true;
+            cvm::global_state.input_code = -9;
+            input_state = false;
+            auto begin = ptr_mx + ptr_my * cols;
+            auto end = ptr_x + ptr_y * cols;
+            for (int i = begin; i <= end; ++i) {
+                buffer[i] = 0;
+                colors_bg[i] = color_bg;
+                colors_fg[i] = color_fg;
+            }
+            ptr_x = ptr_mx;
+            ptr_y = ptr_my;
+            ptr_rx = ptr_mx;
+            ptr_ry = ptr_my;
+        } else if (c == 22) { // Ctrl+V
+        } else {
+            put_char((char) (c & 0xff));
+        }
+    }
+
+    void cgui::reset_cmd() {
+        cmd_state = false;
+        cmd_string.clear();
+    }
+
+    int cgui::reset_cycles() {
+        auto c = cycles;
+        cycles = 0;
+        return c;
+    }
+
+    void cgui::exec_cmd(const string_t &s) {
+        switch (s[0]) {
+            case 'B': { // 设置背景色
+                color_bg = (uint32_t) std::stoul(s.substr(1), nullptr, 16);
+            }
+                break;
+            case 'F': { // 设置前景色
+                color_fg = (uint32_t) std::stoul(s.substr(1), nullptr, 16);
+            }
+                break;
+            case 'S': { // 设置
+                int cfg;
+                cfg = (uint32_t) std::stoul(s.substr(1), nullptr, 10);
+                switch (cfg) {
+                    case 0: { // 换行
+                        if (ptr_x > 0) {
+                            ptr_x = 0;
+                            if (ptr_y == rows - 1) {
+                                new_line();
+                            } else {
+                                ptr_y++;
+                            }
+                        }
+                    }
+                        break;
+                    case 1: // 保存背景色
+                        color_bg_stack.push_back(color_bg);
+                        break;
+                    case 2: // 保存前景色
+                        color_fg_stack.push_back(color_fg);
+                        break;
+                    case 3: // 恢复背景色
+                        color_bg = color_bg_stack.back();
+                        if (color_bg_stack.size() > 1) color_bg_stack.pop_back();
+                        break;
+                    case 4: // 恢复前景色
+                        color_fg = color_fg_stack.back();
+                        if (color_fg_stack.size() > 1) color_fg_stack.pop_back();
+                        break;
+                    default:
+                        break;
+                }
+            }
+                break;
+            default:
+                break;
+        }
+    }
+
+    static inline std::string &ltrim(std::string &s) {
+        s.erase(s.begin(), std::find_if(s.begin(), s.end(), std::not1(std::ptr_fun<int, int>(std::isspace))));
+        return s;
+    }
+
+    static inline std::string &rtrim(std::string &s) {
+        s.erase(std::find_if(s.rbegin(), s.rend(), std::not1(std::ptr_fun<int, int>(std::isspace))).base(), s.end());
+        return s;
+    }
+
+    static inline std::string &trim(std::string &s) {
+        return ltrim(rtrim(s));
+    }
+
+    std::string cgui::output() const {
+        std::stringstream ss;
+        for (auto i = 0; i < rows; ++i) {
+            for (auto j = 0; j < cols; ++j) {
+                auto c = buffer[i * cols + j];
+                if (c > 0) {
+                    if (std::isprint(buffer[i * cols + j])) {
+                        ss << buffer[i * cols + j];
+                    } else {
+                        ss << " ";
+                    }
+                } else if (c < 0) {
+                    ss << " ";
+                }
+            }
+            ss << std::endl;
+        }
+        auto output = ss.str();
+        return trim(output);
+    }
+
+    std::string cgui::tracer() const {
+        enum trace_type {
+            T_CHAR,
+            T_INT,
+        };
+        std::stringstream ss;
+        char sz[256];
+        for (const auto &r : trace_records) {
+            if (r.method == T_MESSAGE) {
+                ss << "Message: " << r.message << std::endl;
+                continue;
+            }
+            ss << "Name: " << r.name << ", ";
+            if (r.method == T_UPDATE)
+                ss << " Method: Update, ";
+            else if (r.method == T_CREATE)
+                ss << " Method: Create, ";
+            else if (r.method == T_DESTROY) {
+                ss << " Method: Destroy" << std::endl;
+                continue;
+            }
+            if (r.type == T_INT)
+                snprintf(sz, sizeof(sz), "Type: int, Value: %d", r.data._i);
+            else if (r.type == T_CHAR)
+                snprintf(sz, sizeof(sz), "Type: char, Value: %c", r.data._c);
+            else
+                continue;
+            ss << sz;
+            if (!r.loc.empty()) {
+                auto N = r.loc.size();
+                if (N == 1) {
+                    snprintf(sz, sizeof(sz), ", Index: %d", r.loc[0]);
+                } else if (N == 2) {
+                    snprintf(sz, sizeof(sz), ", Index: %d,%d", r.loc[0], r.loc[1]);
+                }
+                ss << sz;
+            }
+            ss << std::endl;
+        }
+        return ss.str();
+    }
+
+    std::string cgui::tracer_json() const {
+        using namespace rapidjson;
+        Document d;
+        auto &allocator = d.GetAllocator();
+        d.SetObject();
+        if (trace_records.empty()) {
+            auto o = output();
+            if (o.empty()) {
+                return "{\"code\":400,\"error\":\"empty tracer and output\"}";
+            }
+            d.AddMember("code", Value(400), allocator);
+            d.AddMember("error", StringRef(o.c_str()), allocator);
+            StringBuffer buffer;
+            Writer<StringBuffer> writer(buffer);
+            d.Accept(writer);
+            return buffer.GetString();
+        }
+        d.AddMember("code", Value(200), allocator);
+        enum trace_type {
+            T_CHAR,
+            T_INT,
+        };
+        Value arr(kArrayType);
+        for (const auto &r : trace_records) {
+            Value obj(kObjectType);
+            auto method = StringRef("method");
+            auto type = StringRef("type");
+            auto value = StringRef("value");
+            if (r.method == T_MESSAGE) {
+                obj.AddMember(method, "msg", allocator);
+                obj.AddMember(value, StringRef(r.message.c_str()), allocator);
+                arr.PushBack(obj, allocator);
+                continue;
+            }
+            if (r.method == T_DELAY) {
+                obj.AddMember(method, "delay", allocator);
+                arr.PushBack(obj, allocator);
+                continue;
+            }
+            obj.AddMember("name", StringRef(r.name.c_str()), allocator);
+            if (r.method == T_UPDATE) {
+                obj.AddMember(method, "update", allocator);
+                if (r.rapid)
+                    obj.AddMember("rapid", Value(true), allocator);
+            } else if (r.method == T_CREATE) {
+                obj.AddMember(method, "create", allocator);
+                if (r.chart && r.type == T_INT)
+                    obj.AddMember("chart", Value(r.chart), allocator);
+                if (!r.message.empty())
+                    obj.AddMember(value, StringRef(r.message.c_str()), allocator);
+            } else if (r.method == T_DESTROY) {
+                obj.AddMember(method, "destroy", allocator);
+                arr.PushBack(obj, allocator);
+                continue;
+            }
+            if (r.type == T_INT) {
+                obj.AddMember(type, "int", allocator);
+                if (r.method == T_UPDATE)
+                    obj.AddMember(value, r.data._i, allocator);
+            } else if (r.type == T_CHAR) {
+                obj.AddMember(type, "char", allocator);
+                if (r.method == T_UPDATE)
+                    obj.AddMember(value, r.data._c, allocator);
+            } else
+                continue;
+            if (!r.loc.empty()) {
+                Value loc(kArrayType);
+                for (auto &l : r.loc) {
+                    loc.PushBack(Value(l), allocator);
+                }
+                obj.AddMember("loc", loc, allocator);
+            }
+            arr.PushBack(obj, allocator);
+        }
+        d.AddMember("data", arr, allocator);
+        StringBuffer buffer;
+        Writer<StringBuffer> writer(buffer);
+        d.Accept(writer);
+        return buffer.GetString();
+    }
+
+}
