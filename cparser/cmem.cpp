@@ -228,7 +228,7 @@ namespace clib {
             os << sz << std::endl;
         }
         for (auto &f : memory_page) {
-            snprintf(sz, sizeof(sz), "PAGE: %08llX", f);
+            snprintf(sz, sizeof(sz), "PAGE: %08llX", (unsigned long long) f);
             os << sz << std::endl;
         }
         //check();

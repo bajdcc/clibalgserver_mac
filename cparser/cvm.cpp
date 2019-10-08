@@ -11,6 +11,7 @@
 #include <sstream>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include "cvm.h"
 #include "cgen.h"
 #include "cexception.h"
@@ -18,6 +19,7 @@
 #include "../rapidjson/writer.h"
 #include "../rapidjson/stringbuffer.h"
 
+#define PTR_SIZE 4
 #define ATLTRACE printf
 
 #define REPORT_ERROR 0
@@ -1330,6 +1332,7 @@ namespace clib {
     }
 
     void cvm::error(const string_t &str) const {
+        std::cout << get_stacktrace();
 #if REPORT_ERROR
         {
             std::ofstream log(REPORT_ERROR_FILE, std::ios::app | std::ios::out);
@@ -2223,10 +2226,10 @@ namespace clib {
                 snprintf(str, n, "%f", ctx->ax._d);
                 break;
             case 7:
-                snprintf(str, n, "%lld", ctx->ax._q);
+                snprintf(str, n, "%lld", (long long int) ctx->ax._q);
                 break;
             case 9:
-                snprintf(str, n, "%llu", ctx->ax._uq);
+                snprintf(str, n, "%llu", (long long unsigned int) ctx->ax._uq);
                 break;
             default:
                 snprintf(str, n, "[Invalid format]");
@@ -2534,7 +2537,7 @@ namespace clib {
                     Writer<rapidjson::StringBuffer> writer(strBuf);
                     writer.StartArray();
                     for (auto i = 0; i < s.n; i++) {
-                        auto idp = vmm_get(s.id + i * sizeof(char *));
+                        auto idp = vmm_get(s.id + i * PTR_SIZE);
                         auto idk = vmm_getstr(idp);
                         writer.String(idk.c_str());
                     }

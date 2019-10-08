@@ -14,10 +14,12 @@
 
 ## 注意
 
+请先自行编译安装libevent库，lib路径为`/usr/local/bin`。
+
 当前项目只支持编译64位程序。
 使用Clion在MacOS High Sierra及Ubuntu 19.04（64位）上编译通过。
 
-使用Clion运行时，请将运行配置中的Working Directory设置成项目根目录，否则会报`/sys/entry not found`錯誤。
+使用Clion运行时，请将运行配置中的Working Directory设置成项目根目录，否则会报`/sys/entry not found`错误。
 
 ## 前端技术栈
 
