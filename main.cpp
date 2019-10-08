@@ -10,7 +10,7 @@ int main() {
     gui.set_main(R"(
 #include "/include/io"
 int main() {
-  put_string("Hello world!");
+  put_string("你好！\nHello world!");
 }
 )");
     auto now = std::chrono::system_clock::now();

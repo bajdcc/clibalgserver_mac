@@ -14,7 +14,6 @@
 #include "../rapidjson/document.h"
 #include "../rapidjson/writer.h"
 #include "../rapidjson/stringbuffer.h"
-#include "../rapidjson/error/en.h"
 
 #define ATLTRACE printf
 
@@ -1006,7 +1005,7 @@ namespace clib {
                         ss << " ";
                     }
                 } else if (c < 0) {
-                    ss << " ";
+                    ss << c;
                 }
             }
             ss << std::endl;
