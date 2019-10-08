@@ -4,6 +4,7 @@
 //
 
 #include <algorithm>
+#include <cstring>
 #include "cmem.h"
 #include "cvm.h"
 #include "cexception.h"

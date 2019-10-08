@@ -12,6 +12,13 @@
 
 算法用C语言实现，通过后端处理将C代码编译成可视化步骤。
 
+## 注意
+
+当前项目只支持编译64位程序。
+使用Clion在MacOS High Sierra及Ubuntu 19.04（64位）上编译通过。
+
+使用Clion运行时，请将运行配置中的Working Directory设置成项目根目录，否则会报`/sys/entry not found`錯誤。
+
 ## 前端技术栈
 
 - jQuery
@@ -42,6 +49,8 @@ void trace_rapid(int flag);
 void trace_array_1d_chart(char* name, void* arr, int type, int cols);
 // 追踪图（邻接矩阵）
 void trace_graph(char* name, void* id, void* adj, int inf, int type, int n);
+// 等待
+void trace_delay(int flag);
 ```
 
 ## 知乎文章列表

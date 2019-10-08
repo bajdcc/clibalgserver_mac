@@ -13,7 +13,7 @@ using string_t = std::string;
 template<class K, class V> using map_t = std::unordered_map<K, V>;
 
 namespace clib {
-#if __APPLE__ && __MACH__
+#if __APPLE__ || __MACH__ || __linux__
     using int8 = int8_t;
     using uint8 = uint8_t;
     using int16 = int16_t;

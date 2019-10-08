@@ -6,6 +6,7 @@
 #ifndef CLIBPARSER_CREV_H
 #define CLIBPARSER_CREV_H
 
+#include <vector>
 #include "types.h"
 
 namespace clib {

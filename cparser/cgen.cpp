@@ -7,6 +7,8 @@
 #include <iterator>
 #include <unordered_set>
 #include <iomanip>
+#include <algorithm>
+#include <cstring>
 #include "cgen.h"
 #include "cast.h"
 #include "cvm.h"
